@@ -1,0 +1,6 @@
+streamlit
+playwright
+pandas
+xlsxwriter
+dnspython
+openpyxl
