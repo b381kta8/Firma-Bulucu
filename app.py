@@ -2,8 +2,28 @@ import streamlit as st
 import asyncio
 import sys
 import os
+import subprocess
 
-# --- GÜVENLİK VE GİRİŞ (EN BAŞA EKLENDİ) ---
+# --- KRİTİK DÜZELTME: Tarayıcı Otomatik Kurulumu (Cloud İçin) ---
+# Bu blok, sunucuda tarayıcı yoksa otomatik olarak indirir.
+def install_playwright_browser():
+    try:
+        # Chromium tarayıcısını indir
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        # Linux için gerekli bağımlılıkları kontrol et (Opsiyonel ama güvenli)
+        # subprocess.run([sys.executable, "-m", "playwright", "install-deps", "chromium"], check=True) 
+        print("Playwright tarayıcısı başarıyla kuruldu.")
+    except Exception as e:
+        print(f"Tarayıcı kurulum hatası: {e}")
+
+# Uygulama başladığında bir kez çalıştır
+if "browser_installed" not in st.session_state:
+    with st.spinner("Sunucu hazırlanıyor ve tarayıcı yükleniyor... (Bu işlem ilk seferde 1-2 dk sürebilir)"):
+        install_playwright_browser()
+        st.session_state["browser_installed"] = True
+# ---------------------------------------------------------------
+
+# --- GÜVENLİK VE GİRİŞ ---
 if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
 
@@ -14,18 +34,17 @@ if not st.session_state['authenticated']:
     
     pwd = st.text_input("Şifre", type="password")
     if st.button("Giriş Yap"):
-        if pwd == "üç":  # ŞİFRE BURADA
+        if pwd == "üç":  # Şifre
             st.session_state['authenticated'] = True
             st.rerun()
         else:
             st.error("Hatalı şifre!")
     st.stop() 
-# -------------------------------------------
 
-# --- WINDOWS DÜZELTMESİ ---
+# --- WINDOWS DÜZELTMESİ (Lokalde çalışırken lazım) ---
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-# --------------------------
+# -----------------------------------------------------
 
 from playwright.sync_api import sync_playwright
 import pandas as pd
@@ -86,7 +105,6 @@ def convert_df(df):
 # --- ARAYÜZ ---
 st.set_page_config(page_title="Google Maps Scraper Cloud", layout="wide")
 
-# İMZA
 st.markdown("""
 <div style="position: fixed; top: 65px; right: 20px; z-index: 99999; background: rgba(255, 255, 255, 0.25); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); padding: 8px 16px; border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.4); font-size: 12px; font-weight: 600; color: #333; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
     🚀 Made by ÜÇ & AI
@@ -132,8 +150,7 @@ if st.session_state.get('start_scraping', False):
     status_text.info("Bot sunucuda başlatılıyor...")
     
     with sync_playwright() as p:
-        # BULUT İÇİN KRİTİK AYAR: headless=True
-        # Sunucuda ekran olmadığı için False yaparsan uygulama çöker.
+        # Cloud için headless=True şarttır
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         page = context.new_page()
@@ -221,7 +238,7 @@ if st.session_state.get('start_scraping', False):
                     method = "-"
                     
                     try:
-                        for attempt in range(2): # Cloud'da daha az deneme yapalım hız için
+                        for attempt in range(2): 
                             try:
                                 site_page.goto(website, timeout=12000)
                                 break
