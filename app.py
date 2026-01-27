@@ -111,7 +111,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-st.title("☁️ Google Maps Scraper (Cloud Edition)")
+st.title("☁️ Joy Refund Firma Ajanı")
 st.markdown("Şifreli, Güvenli ve Her Yerden Erişilebilir.")
 
 with st.sidebar:
