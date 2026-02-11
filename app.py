@@ -47,7 +47,6 @@ import time
 import dns.resolver
 
 # --- AYARLAR ---
-# Vakit kaybetmemek için bu sitelere girilmez
 BLOCKED_DOMAINS = [
     "facebook.com", "instagram.com", "twitter.com", "linkedin.com", 
     "youtube.com", "pinterest.com", "trendyol.com", "hepsiburada.com", 
@@ -108,7 +107,6 @@ def convert_df(df):
 # --- ARAYÜZ ---
 st.set_page_config(page_title="Joy Refund Ajanı", layout="wide")
 
-# İMZA (Sağ Üst)
 st.markdown("""
 <div style="
     position: fixed; top: 65px; right: 20px; z-index: 99999; 
@@ -159,8 +157,12 @@ with col1:
     status_text = st.empty()
     progress_bar = st.progress(0)
     st.divider()
-    stat_candidates = st.metric("Havuzdaki Aday", 0)
-    stat_emails = st.metric("✅ Bulunan Mail", len(st.session_state['results']))
+    # Metrikleri güncellemek için placeholder kullanıyoruz
+    stat_candidates_ph = st.empty()
+    stat_candidates_ph.metric("Havuzdaki Aday", 0)
+    
+    stat_emails_ph = st.empty()
+    stat_emails_ph.metric("✅ Bulunan Mail", len(st.session_state['results']))
 
 with col2:
     result_table = st.empty()
@@ -172,7 +174,6 @@ if st.session_state.get('start_scraping', False):
     status_text.info("Bot sunucuda başlatılıyor...")
     
     with sync_playwright() as p:
-        # CLOUD İÇİN HEADLESS=TRUE ŞART
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -188,23 +189,21 @@ if st.session_state.get('start_scraping', False):
             except: pass
 
             try:
-                # Arama kutusunu bulmak için alternatif yöntemler
+                # Arama kutusu
                 search_box = page.locator("input#searchboxinput").or_(page.locator("input[name='q']")).first
                 search_box.wait_for(state="visible", timeout=30000)
                 search_box.fill(search_term)
                 page.keyboard.press("Enter")
             except:
-                st.error("Arama kutusu bulunamadı. Lütfen sayfayı yenileyip tekrar deneyin.")
+                st.error("Arama kutusu bulunamadı.")
                 st.stop()
             
             page.wait_for_selector('div[role="feed"]', timeout=30000)
             
-            # 2. ADAY TOPLAMA (GÜÇLENDİRİLMİŞ SCROLL)
+            # 2. ADAY TOPLAMA
             listings = []
             prev_count = 0
             fails = 0
-            
-            # Huni Mantığı: 1 Mail = 50 İşletme (Garanti olsun diye)
             target_candidates = max_target * 50
             
             status_text.warning(f"Derin tarama yapılıyor... Hedef havuz: {target_candidates} işletme")
@@ -212,11 +211,139 @@ if st.session_state.get('start_scraping', False):
             while len(listings) < target_candidates:
                 if not st.session_state.get('start_scraping', False): break
                 
-                # Standart Scroll
                 page.hover('div[role="feed"]')
                 page.mouse.wheel(0, 5000)
                 time.sleep(1)
                 
-                # Liste sayısını kontrol et
                 listings = page.locator('div[role="article"]').all()
-                stat_candidates.metric("Havuzdaki Aday", len(listings))
+                stat_candidates_ph.metric("Havuzdaki Aday", len(listings))
+                
+                # Eğer yeni veri gelmediyse "SALLA"
+                if len(listings) == prev_count:
+                    fails += 1
+                    status_text.text(f"Liste yükleniyor... ({fails}/10)")
+                    
+                    page.mouse.wheel(0, -1000)
+                    time.sleep(0.5)
+                    page.mouse.wheel(0, 6000)
+                    time.sleep(1.5)
+                    
+                    if fails > 10: 
+                        status_text.info(f"Harita sonuna gelindi. {len(listings)} aday ile devam ediliyor.")
+                        break
+                else:
+                    fails = 0
+                
+                prev_count = len(listings)
+
+            status_text.success(f"{len(listings)} aday bulundu. Detaylı analiz başlıyor...")
+            
+            # 3. DETAYLI ANALİZ
+            for listing in listings:
+                if len(st.session_state['results']) >= max_target: 
+                    st.success("Hedefe ulaşıldı!")
+                    st.session_state['start_scraping'] = False
+                    break
+                
+                if not st.session_state.get('start_scraping', False): break
+                
+                progress_bar.progress(min(len(st.session_state['results']) / max_target, 1.0))
+                
+                try:
+                    listing.click()
+                    time.sleep(1)
+                    
+                    website = None
+                    try:
+                        website_btn = page.locator('[data-item-id="authority"]').first
+                        if website_btn.count() > 0: website = website_btn.get_attribute("href")
+                    except: pass
+                    
+                    if not website: continue
+                    
+                    clean_url = website.rstrip("/")
+                    if clean_url in st.session_state['processed_urls']: continue
+                    st.session_state['processed_urls'].add(clean_url)
+                    
+                    if any(b in website for b in BLOCKED_DOMAINS): continue
+                    
+                    name = "Firma"
+                    try: name = page.locator('h1.DUwDvf').first.inner_text()
+                    except: pass
+                    
+                    phone = None
+                    try:
+                         phone_btn = page.locator('[data-item-id^="phone:"]').first
+                         if phone_btn.count() > 0: phone = phone_btn.get_attribute("aria-label").replace("Telefon: ", "")
+                    except: pass
+                    
+                    status_text.text(f"İnceleniyor: {name}")
+                    
+                    site_page = context.new_page()
+                    email = None
+                    method = "-"
+                    
+                    try:
+                        for attempt in range(2): 
+                            try:
+                                site_page.goto(website, timeout=15000)
+                                break
+                            except: time.sleep(1)
+                        
+                        emails = extract_emails_from_page(site_page)
+                        
+                        if not emails:
+                            contact_links = site_page.locator("a[href*='iletisim'], a[href*='contact']").all()
+                            if contact_links:
+                                try:
+                                    link = contact_links[0].get_attribute("href")
+                                    if link:
+                                        if not link.startswith("http"): link = website.rstrip("/") + "/" + link.lstrip("/")
+                                        site_page.goto(link, timeout=10000)
+                                        emails = extract_emails_from_page(site_page)
+                                except: pass
+                        
+                        if emails:
+                            for p_email in emails:
+                                existing = [i['E-posta'] for i in st.session_state['results']]
+                                if p_email in existing: continue
+                                
+                                if verify_domain_mx(p_email):
+                                    email = p_email
+                                    method = "Web"
+                                    break
+                    except: pass
+                    finally: site_page.close()
+                    
+                    if email:
+                        entry = {
+                            "Firma İsmi": name, 
+                            "İl": city, 
+                            "İlçe": district, 
+                            "Telefon": phone, 
+                            "Web Sitesi": website, 
+                            "E-posta": email, 
+                            "Yöntem": method
+                        }
+                        st.session_state['results'].append(entry)
+                        
+                        result_table.dataframe(pd.DataFrame(st.session_state['results']), use_container_width=True)
+                        stat_emails_ph.metric("✅ Bulunan Mail", len(st.session_state['results']))
+                        
+                        df_new = pd.DataFrame(st.session_state['results'])
+                        excel_placeholder.download_button(
+                            label="📥 Excel İndir", 
+                            data=convert_df(df_new), 
+                            file_name='sonuc_listesi.xlsx', 
+                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 
+                            key=f'dl_{len(st.session_state["results"])}'
+                        )
+
+                except: continue
+
+        except Exception as e:
+            st.error(f"Beklenmedik Hata: {e}")
+        finally:
+            browser.close()
+            if st.session_state['start_scraping']:
+                st.session_state['start_scraping'] = False
