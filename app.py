@@ -3,13 +3,13 @@ import asyncio
 import sys
 import os
 import subprocess
-import gc # RAM temizliği için gerekli
+import gc
+from datetime import datetime
 
-# --- 1. TARAYICI KURULUMU (CLOUD İÇİN) ---
+# --- 1. TARAYICI KURULUMU (CLOUD) ---
 def install_playwright_browser():
     try:
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-        print("Playwright browser installed.")
     except Exception as e:
         print(f"Browser install error: {e}")
 
@@ -29,9 +29,9 @@ if not st.session_state['authenticated']:
             st.session_state['authenticated'] = True
             st.rerun()
         else: st.error("Hatalı şifre!")
-    st.stop() 
+    st.stop()
 
-# --- 3. AYARLAR ---
+# --- 3. AYARLAR & LOGLAMA ---
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -49,8 +49,16 @@ BLOCKED_DOMAINS = [
 
 if 'results' not in st.session_state: st.session_state['results'] = []
 if 'processed_urls' not in st.session_state: st.session_state['processed_urls'] = set()
+if 'logs' not in st.session_state: st.session_state['logs'] = []
 
-# --- YARDIMCI FONKSİYONLAR ---
+# LOG FONKSİYONU
+def log_msg(msg):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    st.session_state['logs'].insert(0, f"[{timestamp}] {msg}")
+    # Log listesi çok şişmesin (son 200 satır)
+    if len(st.session_state['logs']) > 200:
+        st.session_state['logs'].pop()
+
 def verify_domain_mx(email):
     try:
         domain = email.split('@')[1]
@@ -92,7 +100,7 @@ st.markdown("""
     🚀 Made by ÜÇ & AI
 </div>""", unsafe_allow_html=True)
 
-st.title("☁️ Joy Refund Firma Ajanı (Stabil Mod)")
+st.title("☁️ Joy Refund Ajanı (Detaylı Log Modu)")
 
 with st.sidebar:
     st.header("Ayarlar")
@@ -100,52 +108,71 @@ with st.sidebar:
     district = st.text_input("İlçe", "Kadıköy")
     keyword = st.text_input("Sektör", "Giyim Mağazası")
     max_target = st.number_input("Hedef Mail Sayısı", 1, 1000, 20)
-    st.info(f"Yaklaşık {max_target*50} işletme taranacak.")
+    
     st.divider()
     if st.button("Başlat", type="primary"):
         st.session_state['start_scraping'] = True
         st.session_state['results'] = []
         st.session_state['processed_urls'] = set()
+        st.session_state['logs'] = []
+        log_msg("Sistem başlatıldı.")
+    
     if st.button("Durdur"):
         st.session_state['start_scraping'] = False
+        log_msg("Kullanıcı tarafından durduruldu.")
     
-    excel_placeholder = st.empty()
+    # Excel İndir
     if len(st.session_state['results']) > 0:
         df = pd.DataFrame(st.session_state['results'])
-        excel_placeholder.download_button("📥 Excel İndir", convert_df(df), "sonuc.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("📥 Excel İndir", convert_df(df), "sonuc.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-col1, col2 = st.columns([1, 2])
-with col1:
-    status_text = st.empty()
-    progress_bar = st.progress(0)
-    st.divider()
-    stat_candidates_ph = st.empty()
-    stat_candidates_ph.metric("Havuz", 0)
-    stat_emails_ph = st.empty()
-    stat_emails_ph.metric("✅ Mail", len(st.session_state['results']))
+# Üst Panel: İstatistikler
+c1, c2, c3 = st.columns(3)
+c1.metric("Hedeflenen", max_target)
+stat_havuz = c2.metric("Havuzdaki Aday", 0)
+stat_mail = c3.metric("✅ Bulunan Mail", len(st.session_state['results']))
 
-with col2:
-    result_table = st.empty()
-    if len(st.session_state['results']) > 0:
-        result_table.dataframe(pd.DataFrame(st.session_state['results']), use_container_width=True)
+# Orta Panel: İlerleme ve Loglar
+st.divider()
+progress_bar = st.progress(0)
+
+# LOG PANELİ (Canlı akış)
+with st.expander("📝 CANLI İŞLEM LOGLARI (Burayı takip et)", expanded=True):
+    log_container = st.empty()
+
+# Sonuç Tablosu
+st.subheader("Bulunan Firmalar")
+result_table = st.empty()
+if len(st.session_state['results']) > 0:
+    result_table.dataframe(pd.DataFrame(st.session_state['results']), use_container_width=True)
+
+# LOG GÜNCELLEME FONKSİYONU
+def update_logs():
+    log_text = "\n".join(st.session_state['logs'])
+    log_container.code(log_text, language="log")
 
 # --- MOTOR ---
 if st.session_state.get('start_scraping', False):
-    status_text.info("Başlatılıyor (RAM Optimize Modu)...")
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        # Context ayarları: Gereksiz resimleri yükleme, hızlansın
+        # Timeout'ları düşürüyoruz (10 saniye)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        # Harita sekmesi
+        # Global timeout ayarı: 15 saniye içinde işlem bitmezse hata verip geç
+        context.set_default_navigation_timeout(15000)
+        context.set_default_timeout(15000)
+        
         map_page = context.new_page()
 
         try:
-            # 1. Arama
+            # 1. Google Maps
             search_term = f"{city} {district} {keyword}"
-            map_page.goto("https://www.google.com/maps?hl=tr", timeout=60000)
+            log_msg(f"Google Maps açılıyor... Arama: {search_term}")
+            update_logs()
+            
+            map_page.goto("https://www.google.com/maps?hl=tr")
             try: map_page.get_by_role("button", name="Tümünü kabul et").click(timeout=5000)
             except: pass
 
@@ -154,84 +181,101 @@ if st.session_state.get('start_scraping', False):
                 sb.wait_for(state="visible", timeout=30000)
                 sb.fill(search_term)
                 map_page.keyboard.press("Enter")
-            except: st.error("Arama yapılamadı."); st.stop()
+                log_msg("Arama yapıldı, sonuçlar bekleniyor...")
+            except: 
+                log_msg("HATA: Arama kutusu bulunamadı!")
+                st.stop()
             
             map_page.wait_for_selector('div[role="feed"]', timeout=30000)
             
-            # 2. Toplama (Sabırlı Scroll)
+            # 2. Havuz Toplama
             listings = []
             prev_count = 0
             fails = 0
             target_candidates = max_target * 50
             
-            status_text.warning(f"Havuz dolduruluyor... Hedef: {target_candidates}")
+            log_msg(f"Liste toplanıyor... Hedef: {target_candidates} aday.")
+            update_logs()
             
             while len(listings) < target_candidates:
                 if not st.session_state.get('start_scraping', False): break
                 
                 map_page.hover('div[role="feed"]')
                 map_page.mouse.wheel(0, 5000)
-                time.sleep(1.5) # Biraz daha bekle
+                time.sleep(1)
                 
                 listings = map_page.locator('div[role="article"]').all()
-                stat_candidates_ph.metric("Havuz", len(listings))
+                stat_havuz.metric("Havuzdaki Aday", len(listings))
                 
                 if len(listings) == prev_count:
                     fails += 1
-                    status_text.text(f"Liste yükleniyor... ({fails}/20)") # Sabır süresi artırıldı
+                    if fails % 2 == 0: log_msg(f"Liste yüklenmesi bekleniyor... ({fails}/15)")
+                    update_logs()
                     
-                    # Wiggle (Sallama)
+                    # Wiggle
                     map_page.mouse.wheel(0, -1500)
                     time.sleep(0.5)
                     map_page.mouse.wheel(0, 6000)
-                    time.sleep(2)
+                    time.sleep(1.5)
                     
-                    if fails > 20: 
-                        status_text.info("Harita sonu.")
+                    if fails > 15: 
+                        log_msg("Harita sonuna gelindi. Toplama bitti.")
                         break
                 else: fails = 0
                 prev_count = len(listings)
 
-            status_text.success(f"{len(listings)} aday. Analiz başlıyor...")
+            log_msg(f"Toplam {len(listings)} aday toplandı. Analiz başlıyor...")
+            update_logs()
             
-            # 3. Analiz (TEK SEKME TEKNİĞİ)
-            # Her site için yeni sekme açmak yerine, bu sekmeyi sürekli kullanacağız.
+            # 3. Analiz (Visit Page)
             visit_page = context.new_page()
-            
             processed_count = 0
             
-            for listing in listings:
+            for index, listing in enumerate(listings):
                 if len(st.session_state['results']) >= max_target: 
-                    st.success("Bitti!"); st.session_state['start_scraping'] = False; break
+                    log_msg("HEDEF TAMAMLANDI! 🎉")
+                    st.success("İşlem Bitti!"); st.session_state['start_scraping'] = False; break
                 if not st.session_state.get('start_scraping', False): break
                 
                 progress_bar.progress(min(len(st.session_state['results']) / max_target, 1.0))
                 
-                # RAM TEMİZLİĞİ: Her 10 firmada bir çöp topla
+                # RAM Garbage Collection
                 processed_count += 1
-                if processed_count % 10 == 0:
-                    gc.collect() 
+                if processed_count % 10 == 0: gc.collect()
 
                 try:
-                    listing.click()
-                    time.sleep(1)
+                    listing.click(timeout=2000)
+                    time.sleep(0.5)
                     
+                    # Veri Çekme
                     website = None
                     try:
                         wb = map_page.locator('[data-item-id="authority"]').first
                         if wb.count() > 0: website = wb.get_attribute("href")
                     except: pass
                     
-                    if not website: continue
+                    name = "Bilinmiyor"
+                    try: name = map_page.locator('h1.DUwDvf').first.inner_text()
+                    except: pass
+
+                    # LOGLAMA
+                    if not website:
+                        # Web sitesi yoksa logu kirletme, geç
+                        # log_msg(f"Atlandı: {name} (Web sitesi yok)") 
+                        continue
+                    
                     clean_url = website.rstrip("/")
                     if clean_url in st.session_state['processed_urls']: continue
                     st.session_state['processed_urls'].add(clean_url)
                     
-                    if any(b in website for b in BLOCKED_DOMAINS): continue
+                    if any(b in website for b in BLOCKED_DOMAINS): 
+                        log_msg(f"Atlandı: {name} (Sosyal Medya/Pazaryeri)")
+                        update_logs()
+                        continue
                     
-                    name = "Firma"
-                    try: name = map_page.locator('h1.DUwDvf').first.inner_text()
-                    except: pass
+                    # Analiz Başlıyor
+                    log_msg(f"İnceleniyor ({index+1}/{len(listings)}): {name} -> {website}")
+                    update_logs()
                     
                     phone = None
                     try:
@@ -239,50 +283,68 @@ if st.session_state.get('start_scraping', False):
                          if pb.count() > 0: phone = pb.get_attribute("aria-label").replace("Telefon: ", "")
                     except: pass
                     
-                    status_text.text(f"İnceleniyor: {name}")
-                    
-                    # AYNI SEKME ÜZERİNDEN GİT
                     email = None
                     method = "-"
                     
+                    # ZİYARET (Try-Except ile korunmuş)
                     try:
-                        visit_page.goto(website, timeout=15000) # Tekrar aynı sekmeyi kullan
+                        visit_page.goto(website, timeout=10000) # 10 sn mühlet
                         emails = extract_emails_from_page(visit_page)
                         
                         if not emails:
+                            log_msg(f"  > Ana sayfada yok. İletişim aranıyor...")
                             contact_links = visit_page.locator("a[href*='iletisim'], a[href*='contact']").all()
                             if contact_links:
                                 try:
                                     link = contact_links[0].get_attribute("href")
                                     if link:
                                         if not link.startswith("http"): link = website.rstrip("/") + "/" + link.lstrip("/")
-                                        visit_page.goto(link, timeout=10000)
+                                        visit_page.goto(link, timeout=8000)
                                         emails = extract_emails_from_page(visit_page)
                                 except: pass
                         
                         if emails:
                             for p_email in emails:
-                                if p_email in [i['E-posta'] for i in st.session_state['results']]: continue
+                                if p_email in [i['E-posta'] for i in st.session_state['results']]: 
+                                    log_msg(f"  > Mükerrer mail: {p_email}")
+                                    continue
+                                
+                                log_msg(f"  > Mail bulundu: {p_email}. Doğrulanıyor...")
                                 if verify_domain_mx(p_email):
-                                    email = p_email; method = "Web"; break
-                    except: 
-                        # Eğer sekme donarsa resetle
-                        pass
+                                    email = p_email; method = "Web"
+                                    log_msg(f"  > ✅ ONAYLANDI: {email}")
+                                    break
+                                else:
+                                    log_msg(f"  > ❌ MX Kaydı yok (Geçersiz): {p_email}")
+                        else:
+                            log_msg(f"  > Mail bulunamadı.")
+
+                    except Exception as e_visit:
+                        log_msg(f"  > ⚠️ Site Hatası (Timeout/Erişim): {str(e_visit)[:50]}...")
                     
+                    # KAYIT
                     if email:
-                        entry = {"Firma İsmi": name, "İl": city, "İlçe": district, "Telefon": phone, "Web Sitesi": website, "E-posta": email, "Yöntem": method}
-                        st.session_state['results'].append(entry)
+                        st.session_state['results'].append({
+                            "Firma İsmi": name, "İl": city, "İlçe": district, 
+                            "Telefon": phone, "Web Sitesi": website, "E-posta": email, "Yöntem": method
+                        })
                         result_table.dataframe(pd.DataFrame(st.session_state['results']), use_container_width=True)
-                        stat_emails_ph.metric("✅ Mail", len(st.session_state['results']))
-                        df_new = pd.DataFrame(st.session_state['results'])
-                        excel_placeholder.download_button("📥 Excel İndir", convert_df(df_new), "liste.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f'dl_{len(st.session_state["results"])}')
+                        stat_mail.metric("✅ Bulunan Mail", len(st.session_state['results']))
+                    
+                    update_logs() # Her firmadan sonra logu güncelle
 
-                except: continue
+                except Exception as e_listing: 
+                    log_msg(f"Liste öğesi hatası: {e_listing}")
+                    continue
             
-            visit_page.close() # İş bitince kapat
+            visit_page.close()
 
-        except Exception as e: st.error(f"Hata: {e}")
+        except Exception as e: 
+            log_msg(f"KRİTİK HATA: {e}")
+            st.error(f"Hata: {e}")
         finally:
             browser.close()
             if st.session_state['start_scraping']:
                 st.session_state['start_scraping'] = False
+                log_msg("İşlem tamamlandı.")
+                update_logs()
