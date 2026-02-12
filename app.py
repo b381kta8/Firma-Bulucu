@@ -5,6 +5,7 @@ import os
 import subprocess
 import gc
 from datetime import datetime
+from urllib.parse import urljoin, urlparse
 
 # --- 1. TARAYICI KURULUMU ---
 def install_playwright_browser():
@@ -41,26 +42,27 @@ import re
 import time
 import dns.resolver
 
+# Yasaklı domainler (Vakit kaybını önlemek için)
 BLOCKED_DOMAINS = [
     "facebook.com", "instagram.com", "twitter.com", "linkedin.com", 
     "youtube.com", "pinterest.com", "trendyol.com", "hepsiburada.com", 
-    "n11.com", "amazon.com", "ciceksepeti.com", "getir.com", "yemeksepeti.com"
+    "n11.com", "amazon.com", "ciceksepeti.com", "getir.com", "yemeksepeti.com",
+    "google.com", "apple.com"
 ]
 
 if 'results' not in st.session_state: st.session_state['results'] = []
 if 'processed_urls' not in st.session_state: st.session_state['processed_urls'] = set()
 if 'logs' not in st.session_state: st.session_state['logs'] = []
 
-# --- LOG SİSTEMİ (Aşağı Akan Terminal) ---
+# --- LOG SİSTEMİ ---
 def log_msg(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
-    # Yeni mesajı başa değil SONA ekle (Aşağı akması için)
     st.session_state['logs'].append(f"[{timestamp}] {msg}")
-    # Sonsuz şişmeyi önle, son 10 satırı tut
-    if len(st.session_state['logs']) > 10:
-        st.session_state['logs'] = st.session_state['logs'][-10:]
+    if len(st.session_state['logs']) > 8: # Son 8 satır kalsın
+        st.session_state['logs'] = st.session_state['logs'][-8:]
 
 def verify_domain_mx(email):
+    """Hızlı MX kontrolü"""
     try:
         domain = email.split('@')[1]
         dns.resolver.resolve(domain, 'MX')
@@ -68,21 +70,29 @@ def verify_domain_mx(email):
     except: return False
 
 def clean_obfuscated_email(text):
-    return text.replace(" [at] ", "@").replace("(at)", "@").replace(" at ", "@").replace(" [dot] ", ".").replace("(dot)", ".").replace(" dot ", ".")
+    """info [at] site.com gibi gizlemeleri çözer"""
+    text = text.replace(" [at] ", "@").replace("(at)", "@").replace(" at ", "@")
+    text = text.replace(" [dot] ", ".").replace("(dot)", ".").replace(" dot ", ".")
+    return text
 
-def extract_emails_from_page(page):
-    found_emails = set()
-    try:
-        for link in page.locator("a[href^='mailto:']").all():
-            href = link.get_attribute("href")
-            if href and "@" in href:
-                clean = href.replace("mailto:", "").split("?")[0].strip()
-                found_emails.add(clean)
-        content = clean_obfuscated_email(page.content())
-        for email in re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(?!png|jpg|jpeg|gif|css|js)[a-zA-Z]{2,}', content):
-            if len(email) < 50: found_emails.add(email)
-    except: pass
-    return list(found_emails)
+def extract_emails_from_html(html_content):
+    """HTML içeriğinden Regex ile mail çeker"""
+    found = set()
+    # 1. Mailto Linkleri
+    mailto_pattern = r'href=[\'"]mailto:([^\'" >]+)'
+    for match in re.findall(mailto_pattern, html_content):
+        if "@" in match:
+            clean = match.split("?")[0].strip()
+            found.add(clean)
+            
+    # 2. Düz Metin Taraması
+    text_content = clean_obfuscated_email(html_content)
+    # Gelişmiş Regex: Resim uzantılarını hariç tutar
+    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(?!png|jpg|jpeg|gif|css|js|webp|svg|woff)[a-zA-Z]{2,}'
+    for email in re.findall(email_pattern, text_content):
+        if len(email) < 50: found.add(email)
+        
+    return list(found)
 
 def convert_df(df):
     from io import BytesIO
@@ -99,7 +109,7 @@ st.markdown("""
     🚀 Made by ÜÇ & AI
 </div>""", unsafe_allow_html=True)
 
-st.title("☁️ Joy Refund Ajanı (Geniş Havuz Modu)")
+st.title("☁️ Joy Refund Ajanı (Derin Kazı Modu)")
 
 with st.sidebar:
     st.header("Ayarlar")
@@ -108,7 +118,7 @@ with st.sidebar:
     keyword = st.text_input("Sektör", "Giyim Mağazası")
     max_target = st.number_input("Hedef Mail Sayısı", 1, 1000, 20)
     
-    st.warning(f"⚠️ {max_target} mail bulmak için bot en az {max_target*15} işletme toplayana kadar analiz yapmayacaktır.")
+    st.info("Bot artık 'İletişim', 'Hakkımızda', 'KVKK' sayfalarına da girip bakıyor. Bu yüzden bir tık yavaş olabilir ama daha çok sonuç bulur.")
     
     st.divider()
     if st.button("Başlat", type="primary"):
@@ -126,7 +136,7 @@ with st.sidebar:
         st.download_button("📥 Excel İndir", convert_df(df), "sonuc.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 c1, c2, c3 = st.columns(3)
-c1.metric("Hedef Mail", max_target)
+c1.metric("Hedef", max_target)
 stat_havuz = c2.metric("Havuzdaki Aday", 0)
 stat_mail = c3.metric("✅ Bulunan Mail", len(st.session_state['results']))
 
@@ -140,7 +150,6 @@ if len(st.session_state['results']) > 0:
     result_table.dataframe(pd.DataFrame(st.session_state['results']), use_container_width=True)
 
 def update_ui_logs():
-    # Listeyi birleştirip göster
     log_text = "\n".join(st.session_state['logs'])
     log_placeholder.code(log_text, language="cmd")
 
@@ -148,21 +157,25 @@ def update_ui_logs():
 if st.session_state.get('start_scraping', False):
     
     with sync_playwright() as p:
+        # HIZ İÇİN OPTİMİZASYONLAR
         browser = p.chromium.launch(headless=True)
-        # Timeout artırıldı (30sn)
-        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        context.set_default_timeout(30000)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            java_script_enabled=True
+        )
+        # Timeout'u 15 saniyeye düşürdük (Hızlı pes et, sıradakine geç)
+        context.set_default_timeout(15000)
         
         map_page = context.new_page()
 
         try:
             # 1. ARAMA
             search_query = f"{city} {district} {keyword}"
-            log_msg(f"Google Maps: {search_query} aranıyor...")
+            log_msg(f"Aranıyor: {search_query}")
             update_ui_logs()
             
             map_page.goto("https://www.google.com/maps?hl=tr")
-            try: map_page.get_by_role("button", name="Tümünü kabul et").click(timeout=5000)
+            try: map_page.get_by_role("button", name="Tümünü kabul et").click(timeout=3000)
             except: pass
 
             try:
@@ -171,77 +184,68 @@ if st.session_state.get('start_scraping', False):
                 sb.fill(search_query)
                 map_page.keyboard.press("Enter")
             except: 
-                log_msg("Hata: Arama kutusu bulunamadı.")
-                update_ui_logs()
+                st.error("Arama kutusu bulunamadı.")
                 st.stop()
             
             map_page.wait_for_selector('div[role="feed"]', timeout=30000)
             
-            # 2. ADAY TOPLAMA (ZORUNLU HAVUZ DOLDURMA)
+            # 2. HAVUZ TOPLAMA
             listings = []
             prev_count = 0
             fails = 0
             
-            # MATEMATİK: 1 Mail = 15 Aday (En az)
-            # 50 Mail istiyorsan 750 aday toplamadan bırakma.
-            min_required = max_target * 15 
+            # Havuz Alt Limiti (Daha az aday topla ama hızlı analize geç)
+            # 20 mail hedefi için en az 100 aday olsun
+            min_pool = max_target * 5 
+            if min_pool < 50: min_pool = 50
             
-            log_msg(f"HEDEF: {min_required} aday toplanana kadar analiz başlamayacak.")
+            log_msg(f"Havuz dolduruluyor... Hedef min: {min_pool}")
             update_ui_logs()
             
-            while len(listings) < min_required:
+            while len(listings) < min_pool:
                 if not st.session_state.get('start_scraping', False): break
                 
-                # Sadece Mouse değil, KLAVYE "END" tuşu kullan (Çok daha etkilidir)
                 map_page.hover('div[role="feed"]')
-                map_page.keyboard.press("End") 
-                time.sleep(1.5)
+                map_page.keyboard.press("End")
+                time.sleep(1) # Daha hızlı scroll
                 
                 listings = map_page.locator('div[role="article"]').all()
                 stat_havuz.metric("Havuzdaki Aday", len(listings))
                 
                 if len(listings) == prev_count:
                     fails += 1
-                    log_msg(f"Liste genişletiliyor... Deneme {fails}/30")
-                    update_ui_logs()
+                    if fails % 2 == 0:
+                        log_msg(f"Liste yükleniyor... ({fails}/20)")
+                        update_ui_logs()
                     
-                    # Google Maps'i tetiklemek için fareyi yukarı aşağı salla
                     map_page.mouse.wheel(0, -500)
                     time.sleep(0.5)
-                    map_page.mouse.wheel(0, 3000)
-                    time.sleep(1)
+                    map_page.mouse.wheel(0, 4000)
                     
-                    # 30 kere denedi ve sayı artmadıysa, gerçekten bitmiştir.
-                    if fails > 30:
-                        log_msg(f"Harita bitti. {len(listings)} aday ile devam ediliyor.")
-                        update_ui_logs()
+                    if fails > 20:
+                        log_msg(f"Harita bitti. {len(listings)} aday ile devam.")
                         break
                 else:
                     fails = 0
-                    if len(listings) % 50 == 0:
-                        log_msg(f"Havuz: {len(listings)} işletme...")
-                        update_ui_logs()
                 
                 prev_count = len(listings)
 
-            # 3. ANALİZ
-            log_msg(f"Analiz Başlıyor! Toplam {len(listings)} işletme taranacak.")
+            # 3. DERİN ANALİZ (DEEP DIVE)
+            log_msg(f"Analiz Başlıyor! {len(listings)} işletme taranacak.")
             update_ui_logs()
             
             visit_page = context.new_page()
             
             for idx, listing in enumerate(listings):
                 if len(st.session_state['results']) >= max_target: 
-                    log_msg("HEDEF TAMAMLANDI! 🚀")
-                    st.success("Bitti!"); st.session_state['start_scraping'] = False; break
+                    st.success("HEDEF TAMAMLANDI!"); st.session_state['start_scraping'] = False; break
                 
                 if not st.session_state.get('start_scraping', False): break
                 
-                # Hafıza temizliği
-                if (idx % 20 == 0): gc.collect()
+                if (idx % 15 == 0): gc.collect()
 
                 try:
-                    listing.click(timeout=3000)
+                    listing.click(timeout=2000)
                     time.sleep(0.5)
                     
                     # Verileri Al
@@ -251,41 +255,84 @@ if st.session_state.get('start_scraping', False):
                         if wb.count() > 0: website = wb.get_attribute("href")
                     except: pass
                     
+                    # Web sitesi yoksa atla
                     if not website: continue
+                    
+                    # Filtreler
                     clean_url = website.rstrip("/")
                     if clean_url in st.session_state['processed_urls']: continue
                     st.session_state['processed_urls'].add(clean_url)
-                    
                     if any(d in website for d in BLOCKED_DOMAINS): continue
                     
                     name = "Bilinmiyor"
                     try: name = map_page.locator('h1.DUwDvf').first.inner_text()
                     except: pass
                     
-                    log_msg(f"Kontrol ({idx+1}/{len(listings)}): {name}")
+                    log_msg(f"({idx+1}/{len(listings)}) {name}")
                     update_ui_logs()
                     
-                    # Ziyaret Et
+                    # --- SİTE ZİYARETİ VE DERİN TARAMA ---
                     email = None
                     try:
-                        visit_page.goto(website, timeout=12000)
-                        emails = extract_emails_from_page(visit_page)
+                        # 1. Ana Sayfa (Hızlı Yükleme)
+                        # domcontentloaded: Resimlerin yüklenmesini bekleme, yazı gelince başla (ÇOK HIZLI)
+                        visit_page.goto(website, timeout=10000, wait_until="domcontentloaded")
+                        html = visit_page.content()
+                        emails = extract_emails_from_html(html)
                         
+                        # 2. Ana sayfada yoksa ALT SAYFALARA BAK (Derin Tarama)
                         if not emails:
-                            cl = visit_page.locator("a[href*='iletisim'], a[href*='contact']").all()
-                            if cl:
-                                lnk = cl[0].get_attribute("href")
-                                if lnk:
-                                    if not lnk.startswith("http"): lnk = website.rstrip("/") + "/" + lnk.lstrip("/")
-                                    visit_page.goto(lnk, timeout=8000)
-                                    emails = extract_emails_from_page(visit_page)
+                            # İletişim linklerini bul
+                            # "iletisim", "contact", "hakkimizda", "about", "kvkk", "gizlilik" içeren linkleri topla
+                            keywords = ["iletisim", "contact", "hakkimizda", "about", "kvkk", "gizlilik", "bize-ulasin", "impressum"]
+                            
+                            links = visit_page.locator("a").all()
+                            potential_urls = set()
+                            
+                            for lnk in links:
+                                try:
+                                    href = lnk.get_attribute("href")
+                                    if href:
+                                        href_lower = href.lower()
+                                        if any(k in href_lower for k in keywords):
+                                            full_url = urljoin(website, href)
+                                            # Ana domainin dışına çıkma
+                                            if urlparse(website).netloc in full_url:
+                                                potential_urls.add(full_url)
+                                except: continue
+                            
+                            # Bulunan alt sayfalardan en fazla 3 tanesine gir
+                            for sub_url in list(potential_urls)[:3]:
+                                try:
+                                    log_msg(f"  > Alt sayfa taranıyor: {sub_url.split('/')[-1]}")
+                                    update_ui_logs()
+                                    visit_page.goto(sub_url, timeout=8000, wait_until="domcontentloaded")
+                                    sub_html = visit_page.content()
+                                    sub_emails = extract_emails_from_html(sub_html)
+                                    if sub_emails:
+                                        emails.extend(sub_emails)
+                                        break # Bulduysan diğer sayfalara bakma
+                                except: pass
                         
+                        # 3. E-posta Doğrulama ve Kayıt
                         if emails:
                             for em in emails:
                                 if em in [r['E-posta'] for r in st.session_state['results']]: continue
-                                if verify_domain_mx(em):
-                                    email = em; break
-                    except: pass
+                                
+                                # Hız için: MX kontrolü yap ama başarısız olsa bile
+                                # mail formatı düzgünse kaydet (Kullanıcı çok sonuç istiyor)
+                                is_verified = verify_domain_mx(em)
+                                
+                                email = em
+                                # Eğer doğrulanmışsa işaretle
+                                status_icon = "✅" if is_verified else "⚠️"
+                                log_msg(f"  > {status_icon} MAİL BULUNDU: {email}")
+                                update_ui_logs()
+                                break # Bir tane buldun mu yeter, diğer firmaya geç
+
+                    except Exception as e_visit:
+                        # log_msg(f"  > Site hatası: {str(e_visit)[:30]}")
+                        pass
                     
                     if email:
                         st.session_state['results'].append({
@@ -293,14 +340,14 @@ if st.session_state.get('start_scraping', False):
                         })
                         result_table.dataframe(pd.DataFrame(st.session_state['results']), use_container_width=True)
                         stat_mail.metric("✅ Bulunan Mail", len(st.session_state['results']))
-                        log_msg(f"✅ BULUNDU: {email}")
-                        update_ui_logs()
 
                 except: continue
 
         except Exception as e:
-            log_msg(f"Hata: {e}")
+            log_msg(f"Genel Hata: {e}")
             update_ui_logs()
         finally:
             browser.close()
             st.session_state['start_scraping'] = False
+            log_msg("İşlem bitti.")
+            update_ui_logs()
