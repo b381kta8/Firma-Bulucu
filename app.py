@@ -15,7 +15,7 @@ def install_playwright_browser():
         print(f"Browser install error: {e}")
 
 if "browser_installed" not in st.session_state:
-    with st.spinner("Sistem ilk kurulumu yapıyor, lütfen bekleyin..."):
+    with st.spinner("Sistem hazırlanıyor..."):
         install_playwright_browser()
         st.session_state["browser_installed"] = True
 
@@ -91,6 +91,33 @@ def convert_df(df):
         df.to_excel(writer, index=False, sheet_name='Firmalar')
     return output.getvalue()
 
+# --- YENİ: POP-UP AVCISI ---
+def kill_popups(page):
+    """Sitedeki çerez, reklam ve abonelik pencerelerini kapatmaya çalışır."""
+    try:
+        # 1. ESC Tuşu (En etkili yöntem)
+        page.keyboard.press("Escape")
+        
+        # 2. Yaygın Buton Metinleri (Kabul Et, Kapat vb.)
+        targets = [
+            "Kabul Et", "Tümünü Kabul Et", "Accept", "Accept All", "Allow", 
+            "Tamam", "OK", "Anladım", "Kapat", "Close", "Reddet", "Reject", 
+            "Onayla", "İzin Ver"
+        ]
+        
+        # Sayfada bu metinleri içeren buton var mı diye hızlıca bak
+        # (Çok vakit kaybetmemek için kısa timeout)
+        for t in targets:
+            try:
+                # Görünür olan butonlara tıkla
+                btn = page.get_by_text(t, exact=False).first
+                if btn.is_visible():
+                    btn.click(timeout=300)
+                    # log_msg(f"Pop-up kapatıldı: {t}") # Log kirliliği olmasın diye kapalı
+            except: pass
+            
+    except: pass
+
 # --- ARAYÜZ TASARIMI ---
 st.set_page_config(page_title="Joy Refund Ajanı", layout="wide")
 
@@ -99,7 +126,7 @@ st.markdown("""
     🚀 Made by ÜÇ & AI
 </div>""", unsafe_allow_html=True)
 
-st.title("☁️ Joy Refund Ajanı (Pro Modu)")
+st.title("☁️ Joy Refund Ajanı (Pop-up Killer Modu)")
 
 # --- YAN MENÜ ---
 with st.sidebar:
@@ -131,7 +158,6 @@ with st.sidebar:
 
 # --- İLERLEME GÖSTERGESİ (ANA EKRAN) ---
 st.subheader("📊 Canlı İlerleme Durumu")
-# İlerleme Barı ve Yüzde Metni
 col_prog1, col_prog2 = st.columns([3, 1])
 with col_prog1:
     progress_bar = st.progress(0)
@@ -139,7 +165,7 @@ with col_prog2:
     percent_text = st.empty()
     percent_text.markdown("**%0 Başlandı**")
 
-status_notification = st.empty() # "Şu an X firması taranıyor..." mesajı için
+status_notification = st.empty()
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Hedeflenen", max_target)
@@ -197,18 +223,19 @@ if st.session_state.get('start_scraping', False):
             listings = []
             prev_count = 0
             fails = 0
-            # Hedefin 20 katı kadar aday topla
-            min_pool = max_target * 20
+            # 20 mail için en az 150 aday (Daha da artırılabilir)
+            min_pool = max_target * 10 
+            if min_pool < 100: min_pool = 100
             
-            log_msg(f"Havuz dolduruluyor... Hedef min: {min_pool} işletme")
+            log_msg(f"Havuz dolduruluyor... Hedef min: {min_pool}")
             update_ui_logs()
             
             while len(listings) < min_pool:
                 if not st.session_state.get('start_scraping', False): break
                 
-                status_notification.warning(f"Havuz toplanıyor: {len(listings)} / {min_pool} (Lütfen bekleyin)")
+                status_notification.warning(f"Havuz toplanıyor: {len(listings)} / {min_pool}")
                 
-                # Scroll İşlemi
+                # Scroll
                 map_page.hover('div[role="feed"]')
                 map_page.mouse.wheel(0, 5000)
                 time.sleep(0.5)
@@ -221,7 +248,7 @@ if st.session_state.get('start_scraping', False):
                 if len(listings) == prev_count:
                     fails += 1
                     if fails % 2 == 0:
-                        log_msg(f"Liste yükleniyor... ({fails}/25)")
+                        log_msg(f"Yükleniyor... ({fails}/25)")
                         update_ui_logs()
                     
                     map_page.mouse.wheel(0, -1000)
@@ -229,12 +256,12 @@ if st.session_state.get('start_scraping', False):
                     map_page.mouse.wheel(0, 6000)
                     
                     if fails > 25:
-                        log_msg(f"Harita sonuna gelindi. {len(listings)} aday ile devam.")
+                        log_msg(f"Harita sonu. {len(listings)} aday ile devam.")
                         break
                 else: fails = 0
                 prev_count = len(listings)
 
-            # 3. ANALİZ VE BİTİŞ YÜZDESİ
+            # 3. ANALİZ
             log_msg(f"Analiz Başlıyor! Toplam {len(listings)} işletme.")
             update_ui_logs()
             
@@ -242,7 +269,6 @@ if st.session_state.get('start_scraping', False):
             
             for idx, listing in enumerate(listings):
                 if len(st.session_state['results']) >= max_target: 
-                    # --- BİTİŞ EFEKTİ ---
                     st.session_state['start_scraping'] = False
                     status_notification.success("✅ HEDEF SAYIYA ULAŞILDI!")
                     progress_bar.progress(1.0)
@@ -253,11 +279,9 @@ if st.session_state.get('start_scraping', False):
                 if not st.session_state.get('start_scraping', False): break
                 if (idx % 20 == 0): gc.collect()
 
-                # İLERLEME HESABI (YÜZDE)
-                # Hedefe ne kadar yaklaştık?
+                # İlerleme
                 current_percent = len(st.session_state['results']) / max_target
                 if current_percent > 1.0: current_percent = 1.0
-                
                 progress_bar.progress(current_percent)
                 percent_text.markdown(f"**%{int(current_percent*100)} Tamamlandı**")
 
@@ -265,7 +289,6 @@ if st.session_state.get('start_scraping', False):
                     listing.click(timeout=2000)
                     time.sleep(0.5)
                     
-                    # Veri Alma
                     website = None
                     try:
                         wb = map_page.locator('[data-item-id="authority"]').first
@@ -292,10 +315,14 @@ if st.session_state.get('start_scraping', False):
                     verification_status = "Bilinmiyor"
                     
                     try:
-                        # 1. Ana Sayfa (Footer için 'End' tuşuna bas)
+                        # 1. Ana Sayfa (Pop-up Killer Aktif)
                         visit_page.goto(website, timeout=12000, wait_until="domcontentloaded")
+                        kill_popups(visit_page) # <-- YENİ FONKSİYON BURADA
+                        
+                        # Footer'a in
                         visit_page.keyboard.press("End") 
                         time.sleep(1) 
+                        
                         html = visit_page.content()
                         emails = extract_emails_from_html(html)
                         
@@ -315,6 +342,7 @@ if st.session_state.get('start_scraping', False):
                             if target_url:
                                 log_msg(f"  > Alt sayfa: {target_url}")
                                 visit_page.goto(target_url, timeout=10000, wait_until="domcontentloaded")
+                                kill_popups(visit_page) # <-- Burada da çalıştır
                                 visit_page.keyboard.press("End")
                                 time.sleep(1)
                                 emails = extract_emails_from_html(visit_page.content())
@@ -339,7 +367,6 @@ if st.session_state.get('start_scraping', False):
 
                 except: continue
             
-            # Döngü bitti ama hedef dolmadıysa
             if st.session_state['start_scraping']:
                 st.session_state['start_scraping'] = False
                 status_notification.success("Tarama Tamamlandı (Liste Sonu).")
