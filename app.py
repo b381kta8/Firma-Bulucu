@@ -86,7 +86,6 @@ def convert_df(df):
 def kill_popups(page):
     try:
         page.keyboard.press("Escape")
-        # Yaygın butonları tıkla
         targets = ["Kabul Et", "Accept", "Tamam", "OK", "Kapat", "Close", "Reddet", "Onayla", "Allow"]
         for t in targets:
             try:
@@ -103,7 +102,7 @@ st.markdown("""
     🚀 Made by ÜÇ & AI
 </div>""", unsafe_allow_html=True)
 
-st.title("☁️ Joy Refund Ajanı (Tam Liste Modu)")
+st.title("☁️ Joy Refund Ajanı (Derin Panel Analizi)")
 
 # --- YAN MENÜ ---
 with st.sidebar:
@@ -115,8 +114,6 @@ with st.sidebar:
     city = st.text_input("İl", "İstanbul")
     district = st.text_input("İlçe", "Kadıköy")
     keyword = st.text_input("Sektör", "Giyim Mağazası")
-    
-    st.info("⚠️ Bot önce listenin sonuna kadar inip TÜM firmaları toplayacak. Bu işlem biraz sürebilir.")
     
     st.divider()
     if st.button("Başlat", type="primary"):
@@ -141,14 +138,12 @@ def update_download_button():
     else:
         download_placeholder.info("Henüz kayıt bulunamadı.")
 
-# İlk açılışta buton kontrolü
 update_download_button()
 
 # --- İSTATİSTİKLER ---
-# İlerleme Barı (En üstte)
 st.subheader("📊 İlerleme Durumu")
 progress_bar = st.progress(0)
-status_text = st.empty() # "50/500 Firma Tarandı" yazısı
+status_text = st.empty()
 
 c1, c2, c3 = st.columns(3)
 stat_havuz = c1.metric("Toplam Havuz", 0)
@@ -212,12 +207,12 @@ if st.session_state.get('start_scraping', False):
             
             map_page.wait_for_selector('div[role="feed"]', timeout=30000)
             
-            # 2. SONSUZ SCROLL (LİSTE SONUNA KADAR GİT)
+            # 2. HAVUZ TOPLAMA (SONSUZ SCROLL)
             listings = []
             prev_count = 0
             fails = 0
             
-            status_text.warning("TÜM LİSTE TOPLANIYOR... Lütfen bekleyin, bu işlem listenin uzunluğuna göre sürebilir.")
+            status_text.warning("TÜM LİSTE TOPLANIYOR... Bu işlem biraz sürebilir.")
             
             while True:
                 if not st.session_state.get('start_scraping', False): break
@@ -227,61 +222,84 @@ if st.session_state.get('start_scraping', False):
                 map_page.mouse.wheel(0, 5000)
                 time.sleep(0.5)
                 map_page.keyboard.press("End")
-                time.sleep(1) # Yüklenmesi için zaman ver
+                time.sleep(1)
                 
                 listings = map_page.locator('div[role="article"]').all()
                 count = len(listings)
                 stat_havuz.metric("Toplam Havuz", count)
                 
-                # Kullanıcıya canlı görüntü ver (Her 50 firmada bir)
-                if count % 50 == 0:
-                    update_screenshot(map_page, f"Havuz Toplanıyor... ({count} İşletme)")
+                # Sık sık ekran görüntüsü güncelle
+                if count % 30 == 0:
+                    update_screenshot(map_page, f"Havuz Toplanıyor... ({count} adet)")
                 
                 if count == prev_count:
                     fails += 1
-                    # Şoklama yap (Google Maps takılmasın diye)
                     map_page.mouse.wheel(0, -500)
                     time.sleep(0.5)
                     map_page.mouse.wheel(0, 3000)
                     
-                    # Eğer 20 deneme boyunca sayı artmıyorsa liste bitmiştir
-                    if fails > 20:
-                        update_screenshot(map_page, f"Liste Sonu! Toplam {count} işletme bulundu.")
+                    if fails > 15:
+                        update_screenshot(map_page, f"Liste Sonu! Toplam {count} işletme.")
                         break
                 else:
                     fails = 0
                 
                 prev_count = count
 
-            status_text.success(f"Havuz Tamamlandı! Toplam {len(listings)} işletme incelenecek.")
+            status_text.success(f"Analiz Başlıyor! {len(listings)} işletme taranacak.")
             
             # 3. İNATÇI ANALİZ
             visit_page = context.new_page()
             
             for idx, listing in enumerate(listings):
                 if not st.session_state.get('start_scraping', False): break
-                if (idx % 30 == 0): gc.collect() # Hafıza temizliği
+                if (idx % 30 == 0): gc.collect()
 
-                # YÜZDELİK HESAPLAMA (Gerçek Veri)
                 progress = (idx + 1) / len(listings)
                 progress_bar.progress(progress)
-                status_text.info(f"Analiz Ediliyor: %{int(progress*100)} ({idx+1} / {len(listings)})")
+                status_text.info(f"Analiz: %{int(progress*100)} ({idx+1} / {len(listings)})")
                 stat_taranan.metric("İncelenen", idx+1)
 
                 try:
-                    # Listede görünür olması için scroll et
                     listing.scroll_into_view_if_needed()
                     listing.click(timeout=3000)
-                    time.sleep(1) # Bilgilerin yüklenmesini bekle
+                    time.sleep(1.5) # Panelin açılmasını bekle
                     
-                    # Web Sitesi Al
-                    website = None
+                    # --- YENİ: PANELİ KAYDIRMA HAMLESİ ---
+                    # Web sitesi butonu altta kalıyorsa görünür yapmak için
                     try:
-                        wb = map_page.locator('[data-item-id="authority"]').first
-                        if wb.count() > 0: website = wb.get_attribute("href")
+                        # Panelin kendisine odaklan (Role=main veya benzeri)
+                        map_page.locator('div[role="main"]').first.focus()
+                        # Aşağı kaydır
+                        map_page.keyboard.press("PageDown")
+                        time.sleep(0.5)
                     except: pass
                     
-                    # Sadece Web Sitesi Olanları İncele (Vakit kaybetmemek için)
+                    # --- ÇOKLU WEB SİTESİ BULMA STRATEJİSİ ---
+                    website = None
+                    try:
+                        # Yöntem 1: Standart Buton
+                        wb = map_page.locator('[data-item-id="authority"]').first
+                        if wb.count() > 0: website = wb.get_attribute("href")
+                        
+                        # Yöntem 2: "Web sitesi" yazan link
+                        if not website:
+                            wb = map_page.locator("a", has_text="Web sitesi").first
+                            if wb.count() > 0: website = wb.get_attribute("href")
+                            
+                        # Yöntem 3: "Website" yazan link (İngilizce varsa)
+                        if not website:
+                            wb = map_page.locator("a", has_text="Website").first
+                            if wb.count() > 0: website = wb.get_attribute("href")
+
+                    except: pass
+                    
+                    name = "Firma"
+                    try: name = map_page.locator('h1.DUwDvf').first.inner_text()
+                    except: pass
+                    
+                    update_screenshot(map_page, f"Analiz: {name} (Site: {'VAR' if website else 'YOK'})")
+                    
                     if not website: continue
                     
                     clean_url = website.rstrip("/")
@@ -290,31 +308,25 @@ if st.session_state.get('start_scraping', False):
                     
                     if any(d in website for d in BLOCKED_DOMAINS): continue
                     
-                    name = "Firma"
-                    try: name = map_page.locator('h1.DUwDvf').first.inner_text()
-                    except: pass
-                    
-                    update_screenshot(visit_page, f"GİRİLİYOR: {name}")
+                    update_screenshot(visit_page, f"Siteye Giriliyor: {name}")
                     
                     # --- SİTE TARAMA ---
                     email = None
                     verification_status = "Bilinmiyor"
                     
                     try:
-                        # 1. Ana Sayfa
                         visit_page.goto(website, timeout=12000, wait_until="domcontentloaded")
                         kill_popups(visit_page)
                         
-                        # Footer için aşağı in
                         visit_page.keyboard.press("End") 
                         time.sleep(1)
+                        update_screenshot(visit_page, f"{name} - Footer Taranıyor")
                         
                         html = visit_page.content()
                         emails = extract_emails_from_html(html)
                         
-                        # 2. Alt Sayfalar (Eğer ana sayfada yoksa)
                         if not emails:
-                            keywords = ["iletisim", "contact", "hakkimizda", "about", "kvkk", "künye", "bize-ulasin"]
+                            keywords = ["iletisim", "contact", "hakkimizda", "about"]
                             links = visit_page.locator("a").all()
                             target_url = None
                             
@@ -323,7 +335,6 @@ if st.session_state.get('start_scraping', False):
                                     href = lnk.get_attribute("href")
                                     if href and any(k in href.lower() for k in keywords):
                                         target_url = urljoin(website, href)
-                                        # Domain dışı olmasın
                                         if urlparse(website).netloc in target_url: break
                                 except: continue
                             
@@ -351,13 +362,12 @@ if st.session_state.get('start_scraping', False):
                         result_table.dataframe(pd.DataFrame(st.session_state['results']), use_container_width=True)
                         stat_mail.metric("✅ Bulunan", len(st.session_state['results']))
                         
-                        update_download_button() # Butonu güncelle
+                        update_download_button()
                         update_screenshot(visit_page, f"✅ BULUNDU: {email}")
                         time.sleep(0.5)
 
                 except: continue
             
-            # İşlem Bitti
             if st.session_state['start_scraping']:
                 st.session_state['start_scraping'] = False
                 status_text.success("TÜM İŞLEMLER TAMAMLANDI!")
