@@ -58,9 +58,11 @@ JUNK_EMAILS = [
 
 PRIORITY_PREFIXES = ["info", "bilgi", "iletisim", "contact", "muhasebe", "satis", "siparis", "hello", "merhaba"]
 
+# --- HATA DÜZELTME: DEĞİŞKENLERİ BAŞTA TANIMLA ---
 if 'results' not in st.session_state: st.session_state['results'] = []
 if 'processed_urls' not in st.session_state: st.session_state['processed_urls'] = set()
-if 'batch_target' not in st.session_state: st.session_state['batch_target'] = 0 
+if 'current_target' not in st.session_state: st.session_state['current_target'] = 10  # Varsayılan değer
+if 'logs' not in st.session_state: st.session_state['logs'] = []
 
 def verify_domain_mx(email):
     try:
@@ -122,72 +124,51 @@ def kill_popups(page):
             except: pass
     except: pass
 
-# --- GELİŞMİŞ CAPTCHA KIRICI (MOUSE HAREKETLİ) ---
+# --- ANTI-BOT VE CAPTCHA ---
 def attempt_captcha_bypass(page):
-    """Güvenlik duvarını insan gibi davranarak geçmeye çalışır"""
+    """Robot kontrolünü geçmeye çalışır"""
     try:
-        # 1. Cloudflare Iframe Checkbox
         for frame in page.frames:
             try:
-                # Genelde checkbox'lar input type='checkbox' veya role='checkbox' olur
                 checkbox = frame.locator("input[type='checkbox']").first
-                if not checkbox.is_visible():
-                    checkbox = frame.get_by_role("checkbox").first
-                
+                if not checkbox.is_visible(): checkbox = frame.get_by_role("checkbox").first
                 if checkbox.is_visible():
-                    # İnsan taklidi: Üzerine git, bekle, tıkla
-                    checkbox.hover() 
+                    checkbox.hover()
                     time.sleep(random.uniform(0.5, 1.0))
                     checkbox.click()
                     time.sleep(3)
                     return True
             except: pass
         
-        # 2. "Verify" Butonları
         targets = ["Verify you are human", "I am human", "Human", "Robot", "Security Check"]
         for t in targets:
             try:
                 btn = page.get_by_text(t, exact=False).first
                 if btn.is_visible():
-                    btn.hover()
-                    time.sleep(0.5)
-                    btn.click()
-                    time.sleep(3)
+                    btn.hover(); time.sleep(0.5); btn.click(); time.sleep(3)
                     return True
             except: pass
     except: pass
     return False
 
 def check_captcha(page):
-    """Captcha var mı?"""
     try:
         title = page.title().lower()
         content = page.content().lower()[:2000]
-        danger_words = ["captcha", "security check", "challenge", "cloudflare", "verify you are human", "access denied", "robot", "just a moment"]
+        danger_words = ["captcha", "security check", "challenge", "cloudflare", "verify you are human", "robot"]
         if any(w in title for w in danger_words) or any(w in content for w in danger_words):
             return True
         return False
     except: return False
 
-# --- YENİ: İNSAN GİBİ SCROLL (Slow Scroll) ---
 def human_scroll(page):
-    """Google Maps'i yavaşça ve sindirerek kaydırır"""
+    """Yavaş kaydırma"""
     try:
-        # Mouse'u listenin üzerine getir
         page.hover('div[role="feed"]')
-        
-        # Küçük parçalar halinde kaydır
-        for _ in range(5):
-            page.mouse.wheel(0, 800) # Tek seferde devasa atlama yapma (5000 yerine 800)
-            time.sleep(random.uniform(0.3, 0.7)) # Rastgele bekleme
-            
-        # Biraz yukarı yap (Tetiklemek için)
-        page.mouse.wheel(0, -300)
-        time.sleep(0.5)
-        
-        # Tekrar aşağı
-        page.mouse.wheel(0, 1000)
-        time.sleep(1.5) # Yüklenmesi için net bekleme
+        for _ in range(4):
+            page.mouse.wheel(0, 600)
+            time.sleep(random.uniform(0.2, 0.5))
+        time.sleep(1)
     except: pass
 
 # --- ARAYÜZ ---
@@ -198,9 +179,8 @@ st.markdown("""
     🚀 Made by ÜÇ & AI
 </div>""", unsafe_allow_html=True)
 
-st.title("☁️ Joy Refund Ajanı (Yavaş Mod & Tam Liste)")
+st.title("☁️ Joy Refund Ajanı (Fix & Batch Mode)")
 
-# --- YAN MENÜ ---
 with st.sidebar:
     st.header("📥 İndirme Paneli")
     download_placeholder = st.empty()
@@ -212,7 +192,7 @@ with st.sidebar:
     keyword = st.text_input("Sektör", "Giyim Mağazası")
     
     batch_size = st.number_input("Tur Başına Hedef", 1, 500, 10)
-    st.caption("Örn: 10 mail bulunca durur ve sorar.")
+    st.caption("Her X mailde bir durup sorar.")
     
     st.divider()
     
@@ -220,13 +200,13 @@ with st.sidebar:
         st.session_state['start_scraping'] = True
         st.session_state['results'] = []
         st.session_state['processed_urls'] = set()
-        st.session_state['batch_target'] = batch_size 
+        st.session_state['current_target'] = batch_size # Hedefi sıfırla
         st.rerun()
 
     if not st.session_state.get('start_scraping', False) and len(st.session_state['results']) > 0:
-        if st.button(f"▶️ Devam Et (+{batch_size} Mail Daha)"):
+        if st.button(f"▶️ Devam Et (+{batch_size} Mail)"):
             st.session_state['start_scraping'] = True
-            st.session_state['batch_target'] += batch_size 
+            st.session_state['current_target'] += batch_size # Hedefi artır
             st.rerun()
 
     if st.button("Durdur"):
@@ -250,11 +230,10 @@ update_download_button()
 
 # --- İSTATİSTİKLER ---
 c1, c2, c3 = st.columns(3)
-stat_hedef = c1.metric("Şu Anki Hedef", st.session_state.get('batch_target', batch_size))
+stat_hedef = c1.metric("Şu Anki Hedef", st.session_state.get('current_target', batch_size))
 stat_havuz = c2.metric("Toplam Havuz", 0)
-stat_mail = c3.metric("✅ Bulunan", len(st.session_state['results']))
+stat_mail = c3.metric("✅ Toplam Bulunan", len(st.session_state['results']))
 
-# --- İLERLEME BARI ---
 st.write("---")
 st.subheader("📊 İlerleme Durumu")
 progress_bar = st.progress(0)
@@ -285,35 +264,30 @@ def update_screenshot(page, msg, is_error=False):
 # --- MOTOR ---
 if st.session_state.get('start_scraping', False):
     
-    if len(st.session_state['results']) >= st.session_state['batch_target']:
-        st.success(f"Tur tamamlandı ({st.session_state['batch_target']} mail). Devam etmek için butona basın.")
+    # HEDEF KONTROLÜ
+    if len(st.session_state['results']) >= st.session_state['current_target']:
+        st.success(f"Tur tamamlandı ({st.session_state['current_target']} mail). Devam etmek için butona basın.")
         st.session_state['start_scraping'] = False
         st.stop()
 
     with sync_playwright() as p:
-        # ANTI-BOT: Arguments
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                '--disable-blink-features=AutomationControlled', 
-                '--no-sandbox',
-                '--disable-infobars'
-            ]
+            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={"width": 1366, "height": 768},
-            locale="tr-TR",
-            timezone_id="Europe/Istanbul"
+            locale="tr-TR"
         )
-        context.set_default_timeout(25000) 
+        context.set_default_timeout(25000)
         
         map_page = context.new_page()
 
         try:
             # 1. ARAMA
             search_query = f"{city} {district} {keyword}"
-            update_screenshot(map_page, "Google Maps Açılıyor...")
+            update_screenshot(map_page, "Maps Açılıyor...")
             
             map_page.goto("https://www.google.com/maps?hl=tr")
             try: map_page.get_by_role("button", name="Tümünü kabul et").click(timeout=3000)
@@ -332,18 +306,18 @@ if st.session_state.get('start_scraping', False):
             
             map_page.wait_for_selector('div[role="feed"]', timeout=30000)
             
-            # 2. HAVUZ TOPLAMA (YAVAŞ SCROLL)
+            # 2. HAVUZ TOPLAMA
             listings = []
             prev_count = 0
             fails = 0
             
-            status_text.warning("HAVUZ TOPLANIYOR... Hepsini almak için yavaş ilerliyor.")
-            live_status.warning("Yavaş Scroll Modu Aktif (Veri Kaybı Olmaması İçin)")
+            status_text.warning("HAVUZ TOPLANIYOR... (Yavaş Mod)")
+            live_status.warning("Yavaş Scroll ile Liste Toplanıyor...")
             
             while True:
                 if not st.session_state.get('start_scraping', False): break
                 
-                # İNSAN GİBİ SCROLL (Slow)
+                # YAVAŞ SCROLL
                 human_scroll(map_page)
                 
                 listings = map_page.locator('div[role="article"]').all()
@@ -355,13 +329,12 @@ if st.session_state.get('start_scraping', False):
                 
                 if count == prev_count:
                     fails += 1
-                    # Zorlama hareketi
                     map_page.mouse.wheel(0, -500)
                     time.sleep(0.5)
                     map_page.mouse.wheel(0, 2000)
                     time.sleep(1)
                     
-                    if fails > 15: # 15 denemede artmıyorsa bitmiştir
+                    if fails > 15:
                         update_screenshot(map_page, f"Liste Sonu! Toplam {count} işletme.")
                         break
                 else: fails = 0
@@ -370,42 +343,38 @@ if st.session_state.get('start_scraping', False):
             live_status.success(f"Analiz Başlıyor! {len(listings)} işletme incelenecek.")
             status_text.info("Analiz aşamasına geçiliyor...")
             
-            # 3. ANALİZ (PROGRESS BAR DÜZELDİ)
+            # 3. ANALİZ
             visit_page = context.new_page()
-            
-            total_items = len(listings) # Toplam havuz sayısı
+            total_items = len(listings)
             
             for idx, listing in enumerate(listings):
-                # TUR KONTROLÜ
+                # TUR HEDEFİ KONTROLÜ
                 if len(st.session_state['results']) >= st.session_state['current_target']:
-                    st.success(f"🎉 TUR TAMAMLANDI! {st.session_state['current_target']} maile ulaşıldı.")
+                    st.success(f"🎉 TUR TAMAMLANDI! Devam etmek için butona basın.")
                     st.balloons()
                     st.session_state['start_scraping'] = False
-                    update_screenshot(map_page, "Tur Bitti. Devam bekleniyor.")
+                    update_screenshot(map_page, "Tur Bitti. Bekleniyor...")
                     break 
                 
                 if not st.session_state.get('start_scraping', False): break
                 if (idx % 20 == 0): gc.collect()
 
-                # --- DOĞRU YÜZDELİK HESAPLAMA ---
-                # İlerleme çubuğu, havuzdaki toplam firmanın kaçıncısında olduğumuzu gösterir
+                # İlerleme
                 progress = (idx + 1) / total_items
                 progress_bar.progress(progress)
-                status_text.info(f"Analiz Durumu: %{int(progress*100)} ({idx+1} / {total_items})")
+                status_text.info(f"Analiz: %{int(progress*100)} ({idx+1} / {total_items})")
 
                 try:
                     listing.scroll_into_view_if_needed()
                     listing.click(timeout=3000)
                     time.sleep(1.5)
                     
-                    # Panel Kaydırma (Web sitesi butonu için)
                     try:
                         map_page.locator('div[role="main"]').first.focus()
                         map_page.keyboard.press("PageDown")
                         time.sleep(0.5)
                     except: pass
                     
-                    # Web Sitesi Bulma
                     website = None
                     try:
                         wb = map_page.locator('[data-item-id="authority"]').first
@@ -441,13 +410,13 @@ if st.session_state.get('start_scraping', False):
                     try:
                         visit_page.goto(website, timeout=12000, wait_until="domcontentloaded")
                         
-                        # ANTI-BOT: Captcha Kırma Denemesi (Mouse Hareketli)
+                        # ANTI-BOT
                         if check_captcha(visit_page):
                             update_screenshot(visit_page, "⚠️ Robot Kontrolü! Aşılmaya çalışılıyor...", is_error=True)
                             if attempt_captcha_bypass(visit_page):
                                 update_screenshot(visit_page, "✅ Engel Geçildi!")
                             else:
-                                continue # Geçemedik
+                                continue 
                         
                         kill_popups(visit_page)
                         visit_page.keyboard.press("End") 
@@ -477,9 +446,7 @@ if st.session_state.get('start_scraping', False):
                                 try:
                                     update_screenshot(visit_page, f"Derin Tarama: {sub_url}")
                                     visit_page.goto(sub_url, timeout=10000, wait_until="domcontentloaded")
-                                    
                                     if check_captcha(visit_page): attempt_captcha_bypass(visit_page)
-                                    
                                     kill_popups(visit_page)
                                     visit_page.keyboard.press("End")
                                     time.sleep(0.5)
@@ -491,7 +458,6 @@ if st.session_state.get('start_scraping', False):
                         if emails:
                             emails = list(set(emails))
                             emails.sort(key=score_email, reverse=True)
-                            
                             for em in emails:
                                 if em in [r['E-posta'] for r in st.session_state['results']]: continue
                                 is_verified = verify_domain_mx(em)
@@ -506,7 +472,6 @@ if st.session_state.get('start_scraping', False):
                         })
                         result_table.dataframe(pd.DataFrame(st.session_state['results']), use_container_width=True)
                         stat_mail.metric("✅ Toplam Bulunan", len(st.session_state['results']))
-                        
                         update_download_button()
                         update_screenshot(visit_page, f"✅ BULUNDU: {email}")
                         time.sleep(0.5)
