@@ -58,11 +58,11 @@ JUNK_EMAILS = [
 
 PRIORITY_PREFIXES = ["info", "bilgi", "iletisim", "contact", "muhasebe", "satis", "siparis", "hello", "merhaba"]
 
-# --- HATA DÜZELTME: DEĞİŞKENLERİ BAŞTA TANIMLA ---
+# --- STATE TANIMLAMALARI ---
 if 'results' not in st.session_state: st.session_state['results'] = []
 if 'processed_urls' not in st.session_state: st.session_state['processed_urls'] = set()
-if 'current_target' not in st.session_state: st.session_state['current_target'] = 10  # Varsayılan değer
-if 'logs' not in st.session_state: st.session_state['logs'] = []
+if 'current_target' not in st.session_state: st.session_state['current_target'] = 10 
+if 'start_scraping' not in st.session_state: st.session_state['start_scraping'] = False
 
 def verify_domain_mx(email):
     try:
@@ -124,38 +124,59 @@ def kill_popups(page):
             except: pass
     except: pass
 
-# --- ANTI-BOT VE CAPTCHA ---
+# --- GÜÇLENDİRİLMİŞ CAPTCHA KIRICI ---
 def attempt_captcha_bypass(page):
-    """Robot kontrolünü geçmeye çalışır"""
+    """
+    Cloudflare ve diğer captcha türlerini iFrame içine girerek ve
+    mouse hareketi simüle ederek geçmeye çalışır.
+    """
+    print("Captcha bypass deneniyor...")
     try:
+        # 1. Ana sayfadaki iFrame'leri tara (Cloudflare genelde iFrame içindedir)
         for frame in page.frames:
             try:
+                # Cloudflare checkbox'ı genelde bu özelliklere sahiptir
                 checkbox = frame.locator("input[type='checkbox']").first
-                if not checkbox.is_visible(): checkbox = frame.get_by_role("checkbox").first
+                if not checkbox.is_visible():
+                    # Alternatif Cloudflare selector'ları
+                    checkbox = frame.locator(".ctp-checkbox-label").first
+                
                 if checkbox.is_visible():
-                    checkbox.hover()
-                    time.sleep(random.uniform(0.5, 1.0))
-                    checkbox.click()
-                    time.sleep(3)
-                    return True
+                    # İnsan taklidi: Mouse'u yavaşça götür, bekle, tıkla
+                    box = checkbox.bounding_box()
+                    if box:
+                        page.mouse.move(box["x"] + 10, box["y"] + 10, steps=10)
+                        time.sleep(random.uniform(0.2, 0.5))
+                        page.mouse.down()
+                        time.sleep(random.uniform(0.1, 0.3))
+                        page.mouse.up()
+                        time.sleep(3) # Doğrulama için bekle
+                        return True
             except: pass
         
+        # 2. Sayfa içi normal butonlar
         targets = ["Verify you are human", "I am human", "Human", "Robot", "Security Check"]
         for t in targets:
             try:
                 btn = page.get_by_text(t, exact=False).first
                 if btn.is_visible():
-                    btn.hover(); time.sleep(0.5); btn.click(); time.sleep(3)
+                    btn.hover()
+                    time.sleep(0.5)
+                    btn.click()
+                    time.sleep(3)
                     return True
             except: pass
-    except: pass
+            
+    except Exception as e:
+        print(f"Bypass hatası: {e}")
     return False
 
 def check_captcha(page):
+    """Sayfada güvenlik duvarı var mı?"""
     try:
         title = page.title().lower()
         content = page.content().lower()[:2000]
-        danger_words = ["captcha", "security check", "challenge", "cloudflare", "verify you are human", "robot"]
+        danger_words = ["captcha", "security check", "challenge", "cloudflare", "verify you are human", "access denied", "robot", "just a moment"]
         if any(w in title for w in danger_words) or any(w in content for w in danger_words):
             return True
         return False
@@ -196,13 +217,15 @@ with st.sidebar:
     
     st.divider()
     
+    # BUTON MANTIĞI DÜZELTİLDİ
     if st.button("Başlat / Yeni Arama", type="primary"):
         st.session_state['start_scraping'] = True
         st.session_state['results'] = []
         st.session_state['processed_urls'] = set()
-        st.session_state['current_target'] = batch_size # Hedefi sıfırla
+        st.session_state['current_target'] = batch_size
         st.rerun()
 
+    # DEVAM ET BUTONU (Sadece işlem durduysa ve sonuç varsa göster)
     if not st.session_state.get('start_scraping', False) and len(st.session_state['results']) > 0:
         if st.button(f"▶️ Devam Et (+{batch_size} Mail)"):
             st.session_state['start_scraping'] = True
@@ -211,6 +234,7 @@ with st.sidebar:
 
     if st.button("Durdur"):
         st.session_state['start_scraping'] = False
+        st.rerun()
 
 def update_download_button():
     if len(st.session_state['results']) > 0:
@@ -264,30 +288,35 @@ def update_screenshot(page, msg, is_error=False):
 # --- MOTOR ---
 if st.session_state.get('start_scraping', False):
     
-    # HEDEF KONTROLÜ
+    # HEDEF KONTROLÜ (Başlangıçta)
     if len(st.session_state['results']) >= st.session_state['current_target']:
         st.success(f"Tur tamamlandı ({st.session_state['current_target']} mail). Devam etmek için butona basın.")
         st.session_state['start_scraping'] = False
-        st.stop()
+        st.stop() # Burası önemli, scripti burada durdurup butonu gösteriyoruz
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+            args=[
+                '--disable-blink-features=AutomationControlled', 
+                '--no-sandbox',
+                '--disable-infobars',
+                '--start-maximized' # Tam ekran modu
+            ]
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={"width": 1366, "height": 768},
             locale="tr-TR"
         )
-        context.set_default_timeout(25000)
+        context.set_default_timeout(30000) # Timeout artırıldı
         
         map_page = context.new_page()
 
         try:
             # 1. ARAMA
             search_query = f"{city} {district} {keyword}"
-            update_screenshot(map_page, "Maps Açılıyor...")
+            update_screenshot(map_page, "Google Maps Açılıyor...")
             
             map_page.goto("https://www.google.com/maps?hl=tr")
             try: map_page.get_by_role("button", name="Tümünü kabul et").click(timeout=3000)
@@ -317,7 +346,6 @@ if st.session_state.get('start_scraping', False):
             while True:
                 if not st.session_state.get('start_scraping', False): break
                 
-                # YAVAŞ SCROLL
                 human_scroll(map_page)
                 
                 listings = map_page.locator('div[role="article"]').all()
@@ -348,18 +376,18 @@ if st.session_state.get('start_scraping', False):
             total_items = len(listings)
             
             for idx, listing in enumerate(listings):
-                # TUR HEDEFİ KONTROLÜ
+                # TUR HEDEFİ KONTROLÜ (Döngü İçinde)
                 if len(st.session_state['results']) >= st.session_state['current_target']:
                     st.success(f"🎉 TUR TAMAMLANDI! Devam etmek için butona basın.")
                     st.balloons()
                     st.session_state['start_scraping'] = False
                     update_screenshot(map_page, "Tur Bitti. Bekleniyor...")
+                    st.rerun() # Sayfayı yenile ki buton çıksın
                     break 
                 
                 if not st.session_state.get('start_scraping', False): break
                 if (idx % 20 == 0): gc.collect()
 
-                # İlerleme
                 progress = (idx + 1) / total_items
                 progress_bar.progress(progress)
                 status_text.info(f"Analiz: %{int(progress*100)} ({idx+1} / {total_items})")
@@ -403,20 +431,21 @@ if st.session_state.get('start_scraping', False):
                     
                     update_screenshot(visit_page, f"Siteye Giriliyor: {name}")
                     
-                    # --- SİTE TARAMA ---
                     email = None
                     verification_status = "Bilinmiyor"
                     
                     try:
-                        visit_page.goto(website, timeout=12000, wait_until="domcontentloaded")
+                        visit_page.goto(website, timeout=15000, wait_until="domcontentloaded")
                         
-                        # ANTI-BOT
+                        # --- CAPTCHA KIRMA HAMLESİ ---
                         if check_captcha(visit_page):
                             update_screenshot(visit_page, "⚠️ Robot Kontrolü! Aşılmaya çalışılıyor...", is_error=True)
                             if attempt_captcha_bypass(visit_page):
                                 update_screenshot(visit_page, "✅ Engel Geçildi!")
                             else:
-                                continue 
+                                update_screenshot(visit_page, "❌ Engel Geçilemedi, Atlanıyor.")
+                                continue # Geçemediysek atla
+                        # ----------------------------
                         
                         kill_popups(visit_page)
                         visit_page.keyboard.press("End") 
@@ -446,7 +475,10 @@ if st.session_state.get('start_scraping', False):
                                 try:
                                     update_screenshot(visit_page, f"Derin Tarama: {sub_url}")
                                     visit_page.goto(sub_url, timeout=10000, wait_until="domcontentloaded")
+                                    
+                                    # Alt sayfada da captcha olabilir
                                     if check_captcha(visit_page): attempt_captcha_bypass(visit_page)
+                                    
                                     kill_popups(visit_page)
                                     visit_page.keyboard.press("End")
                                     time.sleep(0.5)
@@ -487,3 +519,4 @@ if st.session_state.get('start_scraping', False):
             st.error(f"Hata: {e}")
         finally:
             browser.close()
+            # Otomatik kapatmayı kaldırdık, kontrol yukarıda
