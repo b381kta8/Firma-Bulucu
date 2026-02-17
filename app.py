@@ -42,26 +42,27 @@ import re
 import time
 import dns.resolver
 
-# Yasaklı Domainler (Gereksiz vakit kaybı)
 BLOCKED_DOMAINS = [
     "facebook.com", "instagram.com", "twitter.com", "linkedin.com", 
     "youtube.com", "pinterest.com", "trendyol.com", "hepsiburada.com", 
     "n11.com", "amazon.com", "ciceksepeti.com", "getir.com", "yemeksepeti.com",
-    "google.com", "apple.com", "wikipedia.org", "sikayetvar.com"
+    "google.com", "apple.com", "wikipedia.org"
 ]
 
-# Çöp Mailler (Bunları asla kaydetme)
+# Çöp Mailler
 JUNK_EMAILS = [
     "sentry", "wixpress", "domain.com", "example.com", "email.com", 
     "noreply", "no-reply", "destek@trendyol", "yardim@", "wordpress", 
     "bootstrap", "react", "vue", "node", "support@wix"
 ]
 
-# Öncelikli Mail Başlangıçları (Puanı yüksek olanlar)
+# Öncelikli Mail Başlangıçları
 PRIORITY_PREFIXES = ["info", "bilgi", "iletisim", "contact", "muhasebe", "satis", "siparis", "hello", "merhaba"]
 
 if 'results' not in st.session_state: st.session_state['results'] = []
 if 'processed_urls' not in st.session_state: st.session_state['processed_urls'] = set()
+# TUR HEDEFİ İÇİN YENİ DEĞİŞKEN
+if 'current_target' not in st.session_state: st.session_state['current_target'] = 0 
 
 def verify_domain_mx(email):
     try:
@@ -76,51 +77,33 @@ def clean_obfuscated_email(text):
     return text
 
 def score_email(email):
-    """Mailin kalitesine göre puan verir. Yüksek puanlılar seçilir."""
     score = 0
     local_part = email.split("@")[0].lower()
-    
-    # 1. Öncelikli kelimeler (info, bilgi vs.)
     for p in PRIORITY_PREFIXES:
         if local_part == p: score += 10
         elif local_part.startswith(p): score += 5
-    
-    # 2. Kurumsal görünüm (isim.soyisim genelde daha düşük önceliklidir kurumsal aramalarda)
     if "." not in local_part: score += 2 
-    
-    # 3. Uzunluk (Çok uzun mailler genelde çöp olur)
     if len(email) > 40: score -= 5
-    
     return score
 
 def extract_emails_from_html(html_content):
     found = set()
-    # 1. DevTools Mantığı: HTML içindeki tüm 'mailto:' linklerini sök
     mailto_pattern = r'href=[\'"]mailto:([^\'" >]+)'
     for match in re.findall(mailto_pattern, html_content):
         if "@" in match:
             clean = match.split("?")[0].strip()
             found.add(clean)
-            
-    # 2. Text Taraması
     text_content = clean_obfuscated_email(html_content)
     email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(?!png|jpg|jpeg|gif|css|js|webp|svg|woff|ttf|wav|mp3)[a-zA-Z]{2,}'
     for email in re.findall(email_pattern, text_content):
         if len(email) < 50: found.add(email.lower())
     
-    # FİLTRELEME VE SIRALAMA
     valid_emails = []
     for em in found:
-        # Çöp filtre
         if any(junk in em for junk in JUNK_EMAILS): continue
-        # Uzantı filtre
         if em.endswith((".png", ".jpg", ".js", ".css")): continue
-        
         valid_emails.append(em)
-        
-    # Puanlama sistemine göre sırala (En yüksek puanlı en başa)
     valid_emails.sort(key=score_email, reverse=True)
-    
     return valid_emails
 
 def convert_df(df):
@@ -141,6 +124,33 @@ def kill_popups(page):
             except: pass
     except: pass
 
+# --- YENİ: CAPTCHA / ROBOT KIRICI ---
+def bypass_bot_check(page):
+    """Robot musun kutucuklarını bulup tıklar"""
+    try:
+        # 1. Cloudflare Checkbox (Genelde iframe içindedir)
+        for frame in page.frames:
+            try:
+                checkbox = frame.get_by_role("checkbox").first
+                if checkbox.is_visible():
+                    checkbox.click(timeout=1000)
+                    time.sleep(2) # Geçmesini bekle
+                    return True
+            except: pass
+        
+        # 2. Buton Taraması
+        targets = ["Verify you are human", "I am human", "Human", "Robot", "Security Check", "Doğrula"]
+        for t in targets:
+            try:
+                btn = page.get_by_text(t, exact=False).first
+                if btn.is_visible():
+                    btn.click(timeout=500)
+                    time.sleep(3)
+                    return True
+            except: pass
+    except: pass
+    return False
+
 # --- ARAYÜZ ---
 st.set_page_config(page_title="Joy Refund Ajanı", layout="wide")
 
@@ -149,7 +159,7 @@ st.markdown("""
     🚀 Made by ÜÇ & AI
 </div>""", unsafe_allow_html=True)
 
-st.title("☁️ Joy Refund Ajanı (Akıllı Mail Avcısı)")
+st.title("☁️ Joy Refund Ajanı (Tur & Anti-Bot Modu)")
 
 # --- YAN MENÜ ---
 with st.sidebar:
@@ -162,12 +172,27 @@ with st.sidebar:
     district = st.text_input("İlçe", "Kadıköy")
     keyword = st.text_input("Sektör", "Giyim Mağazası")
     
+    # --- YENİ AYAR: TUR HEDEFİ ---
+    batch_size = st.number_input("Her Turda Bulunacak Mail Sayısı", 1, 500, 10)
+    st.caption(f"Bot her {batch_size} mail bulduğunda durup size soracak.")
+    
     st.divider()
-    if st.button("Başlat", type="primary"):
+    
+    # BAŞLAT BUTONU
+    if st.button("Başlat / Yeni Arama", type="primary"):
         st.session_state['start_scraping'] = True
         st.session_state['results'] = []
         st.session_state['processed_urls'] = set()
-    
+        st.session_state['current_target'] = batch_size # Hedefi ayarla
+        st.rerun()
+
+    # DEVAM ET BUTONU (Sadece duraklatıldığında görünür)
+    if not st.session_state.get('start_scraping', False) and len(st.session_state['results']) > 0:
+        if st.button(f"▶️ Devam Et (+{batch_size} Mail Daha)"):
+            st.session_state['start_scraping'] = True
+            st.session_state['current_target'] += batch_size # Hedefi yükselt
+            st.rerun()
+
     if st.button("Durdur"):
         st.session_state['start_scraping'] = False
 
@@ -188,14 +213,10 @@ def update_download_button():
 update_download_button()
 
 # --- İSTATİSTİKLER ---
-st.subheader("📊 İlerleme Durumu")
-progress_bar = st.progress(0)
-status_text = st.empty()
-
 c1, c2, c3 = st.columns(3)
-stat_havuz = c1.metric("Toplam Havuz", 0)
-stat_taranan = c2.metric("İncelenen", 0)
-stat_mail = c3.metric("✅ Bulunan Mail", len(st.session_state['results']))
+stat_hedef = c1.metric("Şu Anki Hedef", st.session_state.get('current_target', batch_size))
+stat_havuz = c2.metric("Toplam Havuz", 0)
+stat_mail = c3.metric("✅ Toplam Bulunan", len(st.session_state['results']))
 
 st.write("---")
 col_screen, col_table = st.columns([1, 1])
@@ -222,8 +243,21 @@ def update_screenshot(page, msg):
 # --- MOTOR ---
 if st.session_state.get('start_scraping', False):
     
+    # Eğer hedef zaten dolmuşsa uyarı ver ve dur (Kullanıcı Devam Et demeli)
+    if len(st.session_state['results']) >= st.session_state['current_target']:
+        st.success(f"Bu tur tamamlandı ({len(st.session_state['results'])} mail). Devam etmek için yandaki butona basın.")
+        st.session_state['start_scraping'] = False
+        st.stop()
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        # GİZLİ TARAYICI MODU (Anti-Bot)
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-blink-features=AutomationControlled', # Robot izini sil
+                '--no-sandbox'
+            ]
+        )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1366, "height": 768}
@@ -254,12 +288,12 @@ if st.session_state.get('start_scraping', False):
             
             map_page.wait_for_selector('div[role="feed"]', timeout=30000)
             
-            # 2. HAVUZ TOPLAMA (SONSUZ)
+            # 2. HAVUZ TOPLAMA (SONSUZ SCROLL - BEĞENDİĞİN ÖZELLİK)
             listings = []
             prev_count = 0
             fails = 0
             
-            status_text.warning("HAVUZ TOPLANIYOR... Bu işlem listenin sonuna kadar devam edecek.")
+            live_status.warning("HAVUZ TOPLANIYOR... Bu işlem listenin sonuna kadar devam edecek.")
             
             while True:
                 if not st.session_state.get('start_scraping', False): break
@@ -274,7 +308,7 @@ if st.session_state.get('start_scraping', False):
                 count = len(listings)
                 stat_havuz.metric("Toplam Havuz", count)
                 
-                if count % 40 == 0:
+                if count % 50 == 0:
                     update_screenshot(map_page, f"Havuz Toplanıyor... ({count} adet)")
                 
                 if count == prev_count:
@@ -289,19 +323,22 @@ if st.session_state.get('start_scraping', False):
                 else: fails = 0
                 prev_count = count
 
-            status_text.success(f"Analiz Başlıyor! {len(listings)} işletme.")
+            live_status.success(f"Analiz Başlıyor! {len(listings)} işletme taranacak.")
             
-            # 3. İNATÇI VE AKILLI ANALİZ
+            # 3. İNATÇI ANALİZ
             visit_page = context.new_page()
             
             for idx, listing in enumerate(listings):
+                # TUR KONTROLÜ (BURASI ÇOK ÖNEMLİ)
+                if len(st.session_state['results']) >= st.session_state['current_target']:
+                    st.success(f"🎉 TUR TAMAMLANDI! {st.session_state['current_target']} maile ulaşıldı. Devam etmek için butona basın.")
+                    st.balloons()
+                    st.session_state['start_scraping'] = False
+                    update_screenshot(map_page, "Bekleniyor... Devam etmek için butona bas.")
+                    break # Döngüden çık ve dur
+                
                 if not st.session_state.get('start_scraping', False): break
                 if (idx % 30 == 0): gc.collect()
-
-                progress = (idx + 1) / len(listings)
-                progress_bar.progress(progress)
-                status_text.info(f"Analiz: %{int(progress*100)} ({idx+1} / {len(listings)})")
-                stat_taranan.metric("İncelenen", idx+1)
 
                 try:
                     listing.scroll_into_view_if_needed()
@@ -315,7 +352,7 @@ if st.session_state.get('start_scraping', False):
                         time.sleep(0.5)
                     except: pass
                     
-                    # Web Sitesi Bulma
+                    # Web Sitesi Bulma (Çoklu Kontrol)
                     website = None
                     try:
                         wb = map_page.locator('[data-item-id="authority"]').first
@@ -334,10 +371,11 @@ if st.session_state.get('start_scraping', False):
                     try: name = map_page.locator('h1.DUwDvf').first.inner_text()
                     except: pass
                     
-                    update_screenshot(map_page, f"Analiz: {name} (Site: {'VAR' if website else 'YOK'})")
+                    update_screenshot(map_page, f"Analiz ({idx+1}/{len(listings)}): {name}")
                     
                     if not website: continue
                     
+                    # MÜKERRER KONTROLÜ (Daha önce baktıysak geç)
                     clean_url = website.rstrip("/")
                     if clean_url in st.session_state['processed_urls']: continue
                     st.session_state['processed_urls'].add(clean_url)
@@ -351,8 +389,12 @@ if st.session_state.get('start_scraping', False):
                     verification_status = "Bilinmiyor"
                     
                     try:
-                        # 1. Ana Sayfa
                         visit_page.goto(website, timeout=12000, wait_until="domcontentloaded")
+                        
+                        # ANTI-BOT: Captcha var mı?
+                        if bypass_bot_check(visit_page):
+                            update_screenshot(visit_page, "⚠️ Güvenlik duvarı tıklanarak geçildi.")
+                        
                         kill_popups(visit_page)
                         
                         # Footer'a zorla in
@@ -361,52 +403,38 @@ if st.session_state.get('start_scraping', False):
                         
                         emails = extract_emails_from_html(visit_page.content())
                         
-                        # Eğer kaliteli bir mail (info, bilgi) bulunduysa direkt al ve çık
-                        # Eğer bulunamadıysa veya şahıs maili varsa ALT SAYFALARA BAK
                         best_email_found = False
-                        if emails and score_email(emails[0]) >= 5: # Yüksek puanlı mail bulundu
-                             best_email_found = True
+                        if emails and score_email(emails[0]) >= 5: best_email_found = True
                         
                         if not best_email_found:
-                            # HEDEF SAYFALAR: KVKK, İLETİŞİM, KÜNYE
-                            # Bu kelimeler genelde footerda veya menüde olur
-                            target_keywords = ["kvkk", "aydınlatma", "gizlilik", "privacy", "iletişim", "contact", "künye", "hakkımızda", "bize ulaşın"]
-                            
+                            target_keywords = ["kvkk", "aydınlatma", "gizlilik", "iletişim", "contact", "künye", "hakkımızda", "bize ulaşın"]
                             links = visit_page.locator("a").all()
                             priority_urls = []
-                            
                             for lnk in links:
                                 try:
                                     href = lnk.get_attribute("href")
-                                    text = lnk.inner_text().lower()
                                     if href:
                                         full_url = urljoin(website, href)
-                                        # Sadece aynı domain içinde kal
                                         if urlparse(website).netloc in full_url:
-                                            # Link metninde veya url'de anahtar kelime var mı?
-                                            if any(k in text for k in target_keywords) or any(k in href.lower() for k in target_keywords):
+                                            if any(k in href.lower() for k in target_keywords):
                                                 priority_urls.append(full_url)
                                 except: continue
                             
-                            # Tekrar edenleri temizle ve en fazla 3 sayfaya git
-                            priority_urls = list(set(priority_urls))[:3]
-                            
+                            priority_urls = list(set(priority_urls))[:2]
                             for sub_url in priority_urls:
                                 try:
-                                    update_screenshot(visit_page, f"Derin Arama: {sub_url}")
+                                    update_screenshot(visit_page, f"Alt Sayfa: {sub_url}")
                                     visit_page.goto(sub_url, timeout=10000, wait_until="domcontentloaded")
+                                    bypass_bot_check(visit_page) # Alt sayfada da kontrol et
                                     kill_popups(visit_page)
-                                    visit_page.keyboard.press("End") # Footer'a in
+                                    visit_page.keyboard.press("End")
                                     time.sleep(0.5)
-                                    
                                     sub_emails = extract_emails_from_html(visit_page.content())
                                     if sub_emails:
                                         emails.extend(sub_emails)
                                 except: pass
 
-                        # E-postaları tekrar sırala (En iyi mail en üste)
                         if emails:
-                            # Tekrarları sil ve sırala
                             emails = list(set(emails))
                             emails.sort(key=score_email, reverse=True)
                             
@@ -423,7 +451,7 @@ if st.session_state.get('start_scraping', False):
                             "Firma": name, "İl": city, "İlçe": district, "Web": website, "E-posta": email, "Durum": verification_status
                         })
                         result_table.dataframe(pd.DataFrame(st.session_state['results']), use_container_width=True)
-                        stat_mail.metric("✅ Bulunan", len(st.session_state['results']))
+                        stat_mail.metric("✅ Toplam Bulunan", len(st.session_state['results']))
                         
                         update_download_button()
                         update_screenshot(visit_page, f"✅ BULUNDU: {email}")
@@ -431,14 +459,13 @@ if st.session_state.get('start_scraping', False):
 
                 except: continue
             
+            # Liste bittiği için durduysa
             if st.session_state['start_scraping']:
                 st.session_state['start_scraping'] = False
-                status_text.success("TÜM İŞLEMLER TAMAMLANDI!")
-                progress_bar.progress(1.0)
-                st.balloons()
+                st.success("Tüm liste tarandı.")
 
         except Exception as e:
             st.error(f"Hata: {e}")
         finally:
             browser.close()
-            st.session_state['start_scraping'] = False
+            # Loop içinde state kapattığımız için burası temiz
